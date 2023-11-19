@@ -2,6 +2,9 @@ var autoReloadInterval;
 enyo.kind({
 	name: "WebWindow",
 	kind: enyo.HFlexBox,
+	dockWindow: null,
+	appWindow: null,
+	exhibitionMode: false,
 	bookmarkData: [ { caption: "webOS Archive News", value: "http://www.webosarchive.org/news.php"}],
 	homeUrl: "",
 	helpUrl: "file:///media/cryptofs/apps/usr/palm/applications/org.webosarchive.webwindow/help.html",
@@ -20,7 +23,7 @@ enyo.kind({
 		{ name: "browserPanels", kind: "SlidingPane", flex: 1, multiView: true, components: [
 			{name: "bookmarksPane", width: "280px", components: [
 				{kind: "Header", className: "enyo-header-dark", components: [
-					{w: "fill", content:"Bookmarks", domStyles: {"font-weight": "bold"}},
+					{w: "fill", content:"Playlist", domStyles: {"font-weight": "bold"}},
 				]},
 				{kind: "Scroller", flex:1, components: [
 					{ name: "bookmarkList", kind: "VirtualRepeater", flex: 1, onSetupRow: "renderBookmarks", components: [
@@ -38,7 +41,7 @@ enyo.kind({
 					{flex: 1, kind: "Pane", components: [
 						{kind: "WebView", enableJavascript: true, onLoadStarted: "pageLoading", onLoadComplete: "pageLoaded", onPageTitleChanged: "pageChanged", onError: "pageError"},
 					]},
-					{kind: "Toolbar", components: [
+					{kind: "Toolbar", name: "toolbarBrowse", components: [
 						{kind: "GrabButton"},
 						{kind: "Button", name:"btnHome", className: "enyo-button-dark", caption: "Home", onclick: "doGoHome"},
 						{kind: "Button", name:"btnGoUrl", className: "enyo-button-dark", caption: "Go...", onclick: "promptgoToUrlLocally"},
@@ -52,6 +55,7 @@ enyo.kind({
 		{kind: "AppMenu", onBeforeOpen: "toggleAppMenuItems", components: [
 			{kind: "EditMenu"},
 			{kind: "MenuItem", name:"menuHomePage", caption: "Set Home Page", onclick: "promptSetHomeUrl"},
+			{kind: "MenuCheckItem", name:"menuUsePlaylist", caption: "Use Playlist", onclick: "setUsePlaylist"},
 			{kind: "MenuItem", name:"menuHelp", caption: "Help", onclick: "showHelpContent"},
 		]},
 		{kind: "Popup", name: "loadingPopup", lazy: false, layoutKind: "VFlexLayout", style: "width: 300px;height:240px", components: [
@@ -121,17 +125,18 @@ enyo.kind({
 	initBrowser: function(inSender) {
 		var params = enyo.windowParams;
 		enyo.log("Web Window launched with params: " + JSON.stringify(params));
+		if (params && params.dockMode) {
+			this.exhibitionMode = true;
+			this.$.toolbarBrowse.hide();
+		} else {
+			this.exhibitionMode = false;
+			this.$.toolbarBrowse.show();
+		}
 		this.homeUrl = this.getCookie("homeUrl", this.homeUrl);
+		this.autoReloadTime = this.getCookie("autoReloadTime", this.autoReloadTime);
+		this.usePlaylist = this.getCookie("usePlaylist", this.usePlaylist);
 		if (this.homeUrl && this.homeUrl != "") {
-			if (params.query){
-				enyo.warn("********** Search query launch, need to lookup: " + params.query);
-				this.goToUrlLocally(decodeURI(params.query));
-			}
-			else {
-				enyo.warn("Normal launch, opening home page: " + this.homeUrl);
-				this.goToUrlLocally(this.homeUrl);
-			}
-			this.autoReloadTime = this.getCookie("autoReloadTime", this.autoReloadTime);
+			this.goToUrlLocally(this.homeUrl);
 			this.startAutoReloadTimer();
 		} else {
 			//First run
@@ -139,14 +144,13 @@ enyo.kind({
 		}
 		this.loadBookmarks();
 		this.$.browserPanels.selectViewByIndex(1);
-		this.$.Updater.CheckForUpdate(this, "Web Window");
 		props = {
 			blockScreenTimeout: true
 		}
+		this.$.Updater.CheckForUpdate("Web Window");
 		enyo.windows.setWindowProperties(window, props);
 	},
 	applicationRelaunchHandler: function(inSender) {
-		var c = enyo.windows.getRootWindow();
 		var params = enyo.windowParams;
 		enyo.log("Web Window re-launched with params: " + JSON.stringify(params));
 		if (params) {
@@ -154,29 +158,28 @@ enyo.kind({
 				enyo.warn("************ Touch2Share invoked! Sending url: " + this.currentUrl);
 				this.$.stService.call({data: {target: this.currentUrl, type: "rawdata", mimetype: "text/html"}}, {method: "shareData"});
 				return true;
-			} 
-			else if (params.query) {
-				enyo.warn("************ JustType search invoked! Searching for: " + params.query);
-				this.goToUrlLocally(decodeURI(params.query));
-				//return true;
-			} 
+			}
 			else if (params.dockMode) {
 				enyo.warn("************ Launching in Dock Mode");
+				try {
+					dockWindow = enyo.windows.fetchWindow("ExhibitionView");
+					enyo.windows.activateWindow(dockWindow);
+				} catch (ex) {
+					this.dockWindow = enyo.windows.activate("index.html","ExhibitionView",{},{window:"dockMode"});
+				}
+				this.exhibitionMode = true;
 			}
 			else {
-				if (c) {
-					enyo.windows.activate(undefined, c);
-				} else {
-					enyo.windows.activate("index.html", null, params);
-					return true;
-				}	
+				enyo.info("************ Launching in REGULAR Mode");
+				try {
+					appWindow = enyo.windows.fetchWindow("InteractiveView");
+					enyo.windows.activateWindow(appWindow);
+				} catch (ex) {
+					appWindow = enyo.windows.activate("index.html", "InteractiveView", params);
+				}
+				this.exhibitionMode = false;
 			}
 		}
-		//Uncomment below to support a multi-window launch
-		/*else {
-			enyo.windows.openWindow("index.html", null, params);
-			return true;
-		}*/
 	},
 	startAutoReloadTimer: function () {
 		enyo.warn("Clearing autoreload timer");
@@ -185,7 +188,7 @@ enyo.kind({
 		if (this.autoReloadTime != 0) {
 			if (this.autoReloadTime !== false && this.autoReloadTime != 0) {
 				updateTimer = window.setInterval(function () { 
-					this.doReload();
+					this.doNextTimerLoad();
 				}.bind(this), this.autoReloadTime * 1000);
 			}	
 		}
@@ -263,6 +266,11 @@ enyo.kind({
 	toggleAppMenuItems: function() {
 		this.$.menuHomePage.setDisabled(this.currentlyLoading);
 		this.$.menuHelp.setDisabled(this.currentlyLoading);
+		if (this.usePlaylist) {
+			this.$.menuUsePlaylist.setChecked(true)
+		} else {
+			this.$.menuUsePlaylist.setChecked(false);	
+		}
 	},
 	disableControls: function() {
 		this.$.btnAddBookmark.setDisabled(true);
@@ -285,6 +293,14 @@ enyo.kind({
 	promptSetHomeUrl: function(inSender) {
 		useHomeUrl = decodeURI(this.homeUrl);
 		this.getUserInputFromPopup("Home Page", "URL of Home Page:", useHomeUrl, true, this.doSetHomeUrl, this.cancelInputPopup);
+	},
+	setUsePlaylist: function(inSender) {
+		if (this.usePlaylist) {
+			this.usePlaylist = false;
+		} else {
+			this.usePlaylist = true;
+		}
+		this.setCookie("usePlaylist", this.usePlaylist);
 	},
 	doSetHomeUrl: function() {
 		this.homeUrl = this.$.inputText.getValue();
@@ -341,8 +357,36 @@ enyo.kind({
 	doReload: function() {
 		this.goToUrlLocally(this.currentUrl);
 	},
-	doRedraw: function() {
-		this.goToUrlLocally(this.currentUrl + "&Fn=St");
+	doNextTimerLoad: function() {
+		if (!this.usePlaylist) {
+			enyo.log("reloading from timer");
+			this.doReload();
+		} else {
+			var useNext = 0;
+			var useUrl = this.homeUrl;
+			//Check if there are bookmarks
+			enyo.log("bookmark data is: " + this.bookmarkData);
+			if (this.bookmarkData.length > 0) {
+				for (var i=0;i<this.bookmarkData.length;i++) {
+					if (this.currentUrl == this.bookmarkData[i].value) {
+						enyo.log("found currently loaded bookmark" + this.bookmarkData[i].value);
+						useNext = i + 1;
+					} else {
+						enyo.log("this is not the current bookmark:" + this.bookmarkData[i].value + ", vs: " + this.currentUrl);
+					}
+				}
+			}
+			enyo.log("next bookmark index is: " + (useNext));
+			//If there's no next bookmark, go back to home
+			if (useNext >= this.bookmarkData.length) {
+				enyo.log("next bookmark index is out of range, go to home");
+				useUrl = this.homeUrl;
+			} else { 	//Otherwise use the next bookmark
+				enyo.log("using bookmark:" + JSON.stringify(this.bookmarkData[useNext]));
+				useUrl = this.bookmarkData[useNext].value;
+			}
+			this.goToUrlLocally(useUrl);
+		}
 	},
 	promptRenderLocally: function() {
 		this.popupMessage("SSL Warning", "Local rendering may require a SSL Proxy", this.doRenderLocally);
